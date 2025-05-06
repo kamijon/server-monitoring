@@ -23,19 +23,56 @@ print_success() {
     echo -e "\n\033[1;32m==>\033[0m \033[1m$1\033[0m"
 }
 
+# Function to check system requirements
+check_requirements() {
+    print_status "Checking system requirements..."
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        print_error "Please run as root or with sudo"
+        exit 1
+    fi
+    
+    # Check if system is Ubuntu/Debian
+    if ! command_exists apt; then
+        print_error "This script requires Ubuntu/Debian system"
+        exit 1
+    fi
+    
+    # Check Python version
+    if ! command_exists python3; then
+        print_error "Python 3 is required but not installed"
+        exit 1
+    fi
+    
+    # Check available disk space (at least 1GB)
+    local available_space=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [ "$available_space" -lt 1 ]; then
+        print_error "At least 1GB of free disk space is required"
+        exit 1
+    fi
+}
+
+# Function to handle errors
+handle_error() {
+    print_error "An error occurred during installation"
+    print_error "Please check the logs and try again"
+    exit 1
+}
+
+# Set up error handling
+trap 'handle_error' ERR
+
 print_status "Starting installation of Server Monitoring..."
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    print_error "Please run as root or with sudo"
-    exit 1
-fi
+# Check system requirements
+check_requirements
 
 # Update system and install dependencies
 print_status "Updating system and installing dependencies..."
 apt update
 apt upgrade -y
-apt install -y python3 python3-pip python3-venv git supervisor
+apt install -y python3 python3-pip python3-venv git supervisor ufw
 
 # Create application directory
 print_status "Creating application directory..."
@@ -76,28 +113,55 @@ chown -R $SUDO_USER:$SUDO_USER /var/log/supervisor
 # Create database initialization script
 print_status "Creating database initialization script..."
 cat > /opt/server-monitoring/init_db.py << 'EOF'
-from app.database import SessionLocal, User
+import os
+import sys
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.database import Base
+from app.models import User
 import bcrypt
 
+# Database URL
+SQLALCHEMY_DATABASE_URL = "sqlite:///./app.db"
+
 def init_db():
-    db = SessionLocal()
     try:
-        # Check if admin user exists
-        admin = db.query(User).filter(User.username == "admin").first()
-        if not admin:
-            # Create admin user
-            hashed = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt())
-            admin = User(username="admin", password=hashed.decode('utf-8'), is_admin=True)
-            db.add(admin)
-            db.commit()
-            print("Admin user created successfully")
-        else:
-            print("Admin user already exists")
+        # Ensure we're in the correct directory
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Create engine and tables
+        print("Creating database engine...")
+        engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+        
+        print("Creating database tables...")
+        Base.metadata.create_all(bind=engine)
+        print("Database tables created successfully")
+        
+        # Create session
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+        
+        try:
+            print("Checking for existing admin user...")
+            admin = db.query(User).filter(User.username == "admin").first()
+            if not admin:
+                print("Creating admin user...")
+                hashed = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt())
+                admin = User(username="admin", password=hashed.decode('utf-8'), is_admin=True)
+                db.add(admin)
+                db.commit()
+                print("Admin user created successfully")
+            else:
+                print("Admin user already exists")
+        except Exception as e:
+            print(f"Error creating admin user: {str(e)}")
+            db.rollback()
+            raise
+        finally:
+            db.close()
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
-        db.rollback()
-    finally:
-        db.close()
+        sys.exit(1)
 
 if __name__ == "__main__":
     init_db()
@@ -107,7 +171,7 @@ EOF
 print_status "Initializing database..."
 cd /opt/server-monitoring
 source venv/bin/activate
-python3 init_db.py
+PYTHONPATH=/opt/server-monitoring python3 init_db.py
 
 # Create Supervisor configuration
 print_status "Configuring Supervisor..."
@@ -120,7 +184,7 @@ autostart=true
 autorestart=true
 stderr_logfile=/var/log/supervisor/server-monitoring.err.log
 stdout_logfile=/var/log/supervisor/server-monitoring.out.log
-environment=PYTHONUNBUFFERED=1
+environment=PYTHONUNBUFFERED=1,PYTHONPATH=/opt/server-monitoring
 EOF
 
 # Reload Supervisor
