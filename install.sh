@@ -117,9 +117,14 @@ import os
 import sys
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
+import bcrypt
+
+# Add the application directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Now import the app modules
 from app.database import Base
 from app.models import User
-import bcrypt
 
 # Database URL
 SQLALCHEMY_DATABASE_URL = "sqlite:///./app.db"
