@@ -115,7 +115,7 @@ print_status "Creating database initialization script..."
 cat > /opt/server-monitoring/init_db.py << 'EOF'
 import os
 import sys
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models import User
@@ -129,13 +129,20 @@ def init_db():
         # Ensure we're in the correct directory
         os.chdir(os.path.dirname(os.path.abspath(__file__)))
         
-        # Create engine and tables
+        # Create engine
         print("Creating database engine...")
         engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
         
-        print("Creating database tables...")
-        Base.metadata.create_all(bind=engine)
-        print("Database tables created successfully")
+        # Check if tables exist
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
+        
+        if not existing_tables:
+            print("Creating database tables...")
+            Base.metadata.create_all(bind=engine)
+            print("Database tables created successfully")
+        else:
+            print("Database tables already exist")
         
         # Create session
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
